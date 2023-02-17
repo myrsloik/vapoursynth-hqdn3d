@@ -76,8 +76,8 @@ deNoise(
     , uint8_t * tarPlane
     , const int frameWidth
     , const int frameHeight
-    , const int srcStride
-    , const int tarStride
+    , const ptrdiff_t srcStride
+    , const ptrdiff_t tarStride
     , const int *coefsHorizontal
     , const int *coefsVertical
     , const int *coefsTemporal
