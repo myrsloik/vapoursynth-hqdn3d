@@ -25,11 +25,11 @@
 #include <cstdint>
 #include <algorithm>
 
-#include <VapourSynth.h>
-#include <VSHelper.h>
+#include <vapoursynth/VapourSynth4.h>
+#include <vapoursynth/VSHelper4.h>
 
 typedef struct Hqdn3dData {
-    VSNodeRef *clip;
+    VSNode *clip;
     const VSVideoInfo *vi;
 
     double lumSpac;
@@ -51,7 +51,7 @@ VS_CC hqdn3dFree(void *instanceData, VSCore *core, const VSAPI *vsapi) {
 
     Hqdn3dData *d = (Hqdn3dData *)instanceData;
 
-    for (int p = 0; p < d->vi->format->numPlanes; p++) {
+    for (int p = 0; p < d->vi->format.numPlanes; p++) {
         free(d->prevLine[p]);
         free(d->prevFrame[p]);
     }
@@ -132,13 +132,13 @@ deNoise(
 }
 
 static void filterFrame(
-      const VSFrameRef *srcFrame
-    , VSFrameRef *newFrame
+      const VSFrame *srcFrame
+    , VSFrame *newFrame
     , const bool isFirstFrame
     , Hqdn3dData *usrData
     , const VSAPI *vsapi
 ) {
-    const VSFormat *srcFrameFmt = vsapi->getFrameFormat(srcFrame);
+    const VSVideoFormat *srcFrameFmt = vsapi->getVideoFrameFormat(srcFrame);
 
     for (int plane = 0; plane < srcFrameFmt->numPlanes; plane++) {
         if (!usrData->process[plane])
@@ -162,10 +162,10 @@ static void filterFrame(
 
 }
 
-static const VSFrameRef *VS_CC hqdn3dGetFrame(
+static const VSFrame *VS_CC hqdn3dGetFrame(
       int n
     , int activationReason
-    , void **instanceData
+    , void *instanceData
     , void **frameData
     , VSFrameContext *frameCtx
     , VSCore *core
@@ -174,7 +174,7 @@ static const VSFrameRef *VS_CC hqdn3dGetFrame(
     (void)frameData;
 
     // Get the user data
-    Hqdn3dData * usrData = reinterpret_cast<Hqdn3dData *>(*instanceData);
+    Hqdn3dData * usrData = reinterpret_cast<Hqdn3dData *>(instanceData);
 
     if (activationReason == arInitial) {
         // if we skip some frames, filter the gap anyway
@@ -207,7 +207,7 @@ static const VSFrameRef *VS_CC hqdn3dGetFrame(
         usrData->last_frame >= 0) {
 
         for (int i = usrData->last_frame + 1; i < n; i++) {
-            const VSFrameRef *f = vsapi->getFrameFilter(i, usrData->clip, frameCtx);
+            const VSFrame *f = vsapi->getFrameFilter(i, usrData->clip, frameCtx);
 
             filterFrame(f, nullptr, false, usrData, vsapi);
 
@@ -218,7 +218,7 @@ static const VSFrameRef *VS_CC hqdn3dGetFrame(
         int sn = std::max(0, n - usrData->restartLap);
 
         for (int i = sn + 1; i < n; i++) {
-            const VSFrameRef *f = vsapi->getFrameFilter(i, usrData->clip, frameCtx);
+            const VSFrame *f = vsapi->getFrameFilter(i, usrData->clip, frameCtx);
 
             filterFrame(f, nullptr, i == sn + 1, usrData, vsapi);
 
@@ -228,20 +228,20 @@ static const VSFrameRef *VS_CC hqdn3dGetFrame(
 
 
     // Get current frame
-    const VSFrameRef * srcFrame =
+    const VSFrame * srcFrame =
         vsapi->getFrameFilter(n, usrData->clip, frameCtx);
 
 
     // Create target frame
-    const VSFrameRef *plane_src[3] = {
+    const VSFrame *plane_src[3] = {
         usrData->process[0] ? nullptr : srcFrame,
         usrData->process[1] ? nullptr : srcFrame,
         usrData->process[2] ? nullptr : srcFrame
     };
     int planes[3] = { 0, 1, 2 };
 
-    VSFrameRef *newFrame = vsapi->newVideoFrame2(
-          usrData->vi->format
+    VSFrame *newFrame = vsapi->newVideoFrame2(
+          &usrData->vi->format
         , usrData->vi->width
         , usrData->vi->height
         , plane_src
@@ -259,24 +259,6 @@ static const VSFrameRef *VS_CC hqdn3dGetFrame(
     return newFrame;
 }
 
-
-static void VS_CC hqdn3dInit(
-      VSMap *in
-    , VSMap *out
-    , void **instanceData
-    , VSNode *node
-    , VSCore *core
-    , const VSAPI *vsapi
-) {
-    (void)in;
-    (void)out;
-    (void)core;
-
-    Hqdn3dData *d = (Hqdn3dData *) * instanceData;
-
-    vsapi->setVideoInfo(d->vi, 1, node);
-}
-
 // Create the plugin
 static void VS_CC hqdn3dCreate(
       const VSMap *in
@@ -290,55 +272,55 @@ static void VS_CC hqdn3dCreate(
     Hqdn3dData d;
     int err;
 
-    d.lumSpac    = vsapi->propGetFloat(in, "lum_spac",    0, &err);
+    d.lumSpac    = vsapi->mapGetFloat(in, "lum_spac",    0, &err);
     if (err) {
         d.lumSpac = 4.0;
     } else if (d.lumSpac < 0 || d.lumSpac > 255) {
-        vsapi->setError(out, "Hqdn3d: lum_spac must be between 0 and 255 (inclusive).");
+        vsapi->mapSetError(out, "Hqdn3d: lum_spac must be between 0 and 255 (inclusive).");
         return;
     }
 
-    d.chromSpac  = vsapi->propGetFloat(in, "chrom_spac",  0, &err);
+    d.chromSpac  = vsapi->mapGetFloat(in, "chrom_spac",  0, &err);
     if (err) {
         d.chromSpac = .75 * d.lumSpac;
     } else if (d.chromSpac < 0 || d.chromSpac > 255) {
-        vsapi->setError(out, "Hqdn3d: chrom_spac must be between 0 and 255 (inclusive).");
+        vsapi->mapSetError(out, "Hqdn3d: chrom_spac must be between 0 and 255 (inclusive).");
         return;
     }
 
-    d.lumTmp     = vsapi->propGetFloat(in, "lum_tmp",     0, &err);
+    d.lumTmp     = vsapi->mapGetFloat(in, "lum_tmp",     0, &err);
     if (err) {
         d.lumTmp = 1.5 * d.lumSpac;
     } else if (d.lumTmp < 0 || d.lumTmp > 255) {
-        vsapi->setError(out, "Hqdn3d: lum_tmp must be between 0 and 255 (inclusive).");
+        vsapi->mapSetError(out, "Hqdn3d: lum_tmp must be between 0 and 255 (inclusive).");
         return;
     }
 
-    d.chromTmp   = vsapi->propGetFloat(in, "chrom_tmp",   0, &err);
+    d.chromTmp   = vsapi->mapGetFloat(in, "chrom_tmp",   0, &err);
     if (err) {
         d.chromTmp = (d.lumSpac == 0) ? d.chromSpac * 1.5
                                       : d.lumTmp * d.chromSpac / d.lumSpac;
     } else if (d.chromTmp < 0 || d.chromTmp > 255) {
-        vsapi->setError(out, "Hqdn3d: chrom_tmp must be between 0 and 255 (inclusive).");
+        vsapi->mapSetError(out, "Hqdn3d: chrom_tmp must be between 0 and 255 (inclusive).");
         return;
     }
 
-    d.restartLap = int64ToIntS(vsapi->propGetInt(in, "restart_lap", 0, &err));
+    d.restartLap = vsh::int64ToIntS(vsapi->mapGetInt(in, "restart_lap", 0, &err));
     if (err)
         d.restartLap = std::max(2
             , static_cast<int>(1 + std::max(d.lumTmp, d.chromTmp)));
 
 
-    d.clip = vsapi->propGetNode(in, "clip", 0, NULL);
+    d.clip = vsapi->mapGetNode(in, "clip", 0, NULL);
     d.vi = vsapi->getVideoInfo(d.clip);
 
-    if (!d.vi->format ||
-        d.vi->format->colorFamily == cmRGB ||
-        d.vi->format->bitsPerSample > 8 ||
+    if (d.vi->format.colorFamily == cfUndefined ||
+        d.vi->format.colorFamily == cfRGB ||
+        d.vi->format.bitsPerSample > 8 ||
         d.vi->width == 0 ||
         d.vi->height == 0) {
 
-        vsapi->setError(out, "Hqdn3d: input clip must be 8 bit, not RGB, and it must have constant format and dimensions.");
+        vsapi->mapSetError(out, "Hqdn3d: input clip must be 8 bit, not RGB, and it must have constant format and dimensions.");
         vsapi->freeNode(d.clip);
         return;
     }
@@ -370,13 +352,13 @@ static void VS_CC hqdn3dCreate(
     d.process[1] = d.process[2] = d.chromSpac != 0 || d.chromTmp != 0;
 
 
-    for (int p = 0; p < d.vi->format->numPlanes; p++) {
+    for (int p = 0; p < d.vi->format.numPlanes; p++) {
         int width = d.vi->width;
         int height = d.vi->height;
 
         if (p) {
-            width >>= d.vi->format->subSamplingW;
-            height >>= d.vi->format->subSamplingH;
+            width >>= d.vi->format.subSamplingW;
+            height >>= d.vi->format.subSamplingH;
         }
 
         d.prevFrame[p] = (unsigned int *)malloc(width * height * sizeof(unsigned int));
@@ -387,43 +369,40 @@ static void VS_CC hqdn3dCreate(
     Hqdn3dData * data = (Hqdn3dData *)malloc(sizeof(Hqdn3dData));
     *data = d;
 
-    vsapi->createFilter(
-          in
-        , out
-        , "Hqdn3d"
-        , hqdn3dInit
+    VSFilterDependency deps[] = { { data->clip, rpGeneral } };
+
+    VSNode *node = vsapi->createVideoFilter2(
+          "Hqdn3d"
+        , data->vi
         , hqdn3dGetFrame
         , hqdn3dFree
-        , fmSerial
-        , nfMakeLinear
+        , fmUnordered
+        , deps
+        , 1
         , data
         , core
     );
+
+    vsapi->setLinearFilter(node);
+    vsapi->mapConsumeNode(out, "clip", node, maAppend);
 }
 
-VS_EXTERNAL_API(void) VapourSynthPluginInit(
-      VSConfigPlugin configFunc
-    , VSRegisterFunction registerFunc
-    , VSPlugin *plugin
-) {
-    configFunc(
-          "com.vapoursynth.hqdn3d"
-        , "hqdn3d"
-        , "HQDn3D port as used in avisynth/mplayer"
-        , VAPOURSYNTH_API_VERSION
-        , 1
-        , plugin
-    );
-    registerFunc(
+VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin *plugin, const VSPLUGINAPI *vspapi) {
+    vspapi->configPlugin("com.vapoursynth.hqdn3d", "hqdn3d",
+        "HQDn3D port as used in avisynth/mplayer",
+        VS_MAKE_VERSION(1, 0), VAPOURSYNTH_API_VERSION, 0, plugin);
+
+    vspapi->registerFunction(
           "Hqdn3d"
-        , "clip:clip;"
+        , "clip:vnode;"
           "lum_spac:float:opt;"
           "chrom_spac:float:opt;"
           "lum_tmp:float:opt;"
           "chrom_tmp:float:opt;"
           "restart_lap:int:opt;"
+        , "clip:vnode;"
         , hqdn3dCreate
-        , 0
+        , NULL
         , plugin
     );
 }
