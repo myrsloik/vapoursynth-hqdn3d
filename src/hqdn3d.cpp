@@ -70,17 +70,17 @@ LowPassMul(unsigned int pMul, unsigned int cMul, const int* coef){
 
 static void
 deNoise(
-      const uint8_t * srcPlane
+      const uint8_t *__restrict srcPlane
     , unsigned int * prevPlane
     , unsigned int * prevLine
-    , uint8_t * tarPlane
+    , uint8_t *__restrict tarPlane
     , const int frameWidth
     , const int frameHeight
     , const ptrdiff_t srcStride
     , const ptrdiff_t tarStride
-    , const int *coefsHorizontal
-    , const int *coefsVertical
-    , const int *coefsTemporal
+    , const int *__restrict coefsHorizontal
+    , const int *__restrict coefsVertical
+    , const int *__restrict coefsTemporal
     , const bool isFirstFrame
 ) {
     static const unsigned int ROUND_LINE  = 0x1000007F;
@@ -173,25 +173,16 @@ static const VSFrame *VS_CC hqdn3dGetFrame(
 ) {
     (void)frameData;
 
+    const int planes[3] = { 0, 1, 2 };
+
     // Get the user data
     Hqdn3dData * usrData = reinterpret_cast<Hqdn3dData *>(instanceData);
 
     if (activationReason == arInitial) {
-        // if we skip some frames, filter the gap anyway
-        if (n > usrData->last_frame + 1 &&
-            n - usrData->last_frame <= usrData->restartLap + 1 &&
-            usrData->last_frame >= 0) {
+        int sn = std::max(0, n - usrData->restartLap);
 
-            for (int i = usrData->last_frame + 1; i < n; i++) {
-                vsapi->requestFrameFilter(i, usrData->clip, frameCtx);
-            }
-        // if processing out of sequence, filter several previous frames to minimize seeking problems
-        } else if (n != usrData->last_frame + 1) {
-            int sn = std::max(0, n - usrData->restartLap);
-
-            for (int i = sn + 1; i < n; i++)
-                vsapi->requestFrameFilter(i, usrData->clip, frameCtx);
-        }
+        for (int i = sn + 1; i < n; i++)
+            vsapi->requestFrameFilter(i, usrData->clip, frameCtx);
 
         vsapi->requestFrameFilter(n, usrData->clip, frameCtx);
 
@@ -207,11 +198,31 @@ static const VSFrame *VS_CC hqdn3dGetFrame(
         usrData->last_frame >= 0) {
 
         for (int i = usrData->last_frame + 1; i < n; i++) {
-            const VSFrame *f = vsapi->getFrameFilter(i, usrData->clip, frameCtx);
+            const VSFrame *srcFrame = vsapi->getFrameFilter(i, usrData->clip, frameCtx);
 
-            filterFrame(f, nullptr, false, usrData, vsapi);
+            // Create target frame
+            const VSFrame *plane_src[3] = {
+                usrData->process[0] ? nullptr : srcFrame,
+                usrData->process[1] ? nullptr : srcFrame,
+                usrData->process[2] ? nullptr : srcFrame
+            };
+            
 
-            vsapi->freeFrame(f);
+            VSFrame *newFrame = vsapi->newVideoFrame2(
+                &usrData->vi->format
+                , usrData->vi->width
+                , usrData->vi->height
+                , plane_src
+                , planes
+                , srcFrame
+                , core
+            );
+
+            filterFrame(srcFrame, newFrame, false, usrData, vsapi);
+
+            vsapi->freeFrame(srcFrame);
+            vsapi->cacheFrame(newFrame, i, frameCtx);
+            vsapi->freeFrame(newFrame);
         }
     // if processing out of sequence, filter several previous frames to minimize seeking problems
     } else if (n != usrData->last_frame + 1) {
@@ -238,7 +249,6 @@ static const VSFrame *VS_CC hqdn3dGetFrame(
         usrData->process[1] ? nullptr : srcFrame,
         usrData->process[2] ? nullptr : srcFrame
     };
-    int planes[3] = { 0, 1, 2 };
 
     VSFrame *newFrame = vsapi->newVideoFrame2(
           &usrData->vi->format
@@ -306,10 +316,8 @@ static void VS_CC hqdn3dCreate(
     }
 
     d.restartLap = vsh::int64ToIntS(vsapi->mapGetInt(in, "restart_lap", 0, &err));
-    if (err)
-        d.restartLap = std::max(2
-            , static_cast<int>(1 + std::max(d.lumTmp, d.chromTmp)));
-
+    //if (err) sneakily preserve err until much later
+    //  d.restartLap = std::max(2, static_cast<int>(1 + std::max(d.lumTmp, d.chromTmp)));
 
     d.clip = vsapi->mapGetNode(in, "clip", 0, NULL);
     d.vi = vsapi->getVideoInfo(d.clip);
@@ -376,14 +384,17 @@ static void VS_CC hqdn3dCreate(
         , data->vi
         , hqdn3dGetFrame
         , hqdn3dFree
-        , fmUnordered
+        , fmParallelRequests
         , deps
         , 1
         , data
         , core
     );
 
-    vsapi->setLinearFilter(node);
+    if (err)
+        data->restartLap = vsapi->setLinearFilter(node);
+    else
+        vsapi->setLinearFilter(node);
     vsapi->mapConsumeNode(out, "clip", node, maAppend);
 }
 
